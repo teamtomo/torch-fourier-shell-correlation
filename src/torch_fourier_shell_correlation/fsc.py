@@ -54,8 +54,9 @@ def fsc(
     fsc = [
         _normalised_cc_complex_1d(a[idx], b[idx])
         for idx in
-        shell_idx
+        shell_idx[1:]
     ]
+    fsc = [1.0] + fsc  # fix the 0 DC shell to 1.0
     return torch.real(torch.tensor(fsc))
 
 
