@@ -37,13 +37,14 @@ def fsc(
         a, b, frequencies = (torch.flatten(arg) for arg in [a, b, frequency_grid])
 
     # define frequency bins
-    bin_centers = torch.fft.rfftfreq(image_shape[0])
+    bin_centers = torch.fft.rfftfreq(image_shape[0], device=a.device)
     df = 1 / image_shape[0]
 
     # setup to split data at midpoint between frequency bin centers
-    bin_centers = torch.cat([bin_centers, torch.as_tensor([0.5 + df])])
+    bin_centers = torch.cat([bin_centers, torch.as_tensor([0.5 + df], device=a.device)])
     bin_centers = bin_centers.unfold(dimension=0, size=2, step=1)  # (n_shells, 2)
     split_points = einops.reduce(bin_centers, 'shells high_low -> shells', reduction='mean')
+    
 
     # find indices of all components in each shell
     sorted_frequencies, sort_idx = torch.sort(frequencies, descending=False)
