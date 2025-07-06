@@ -189,3 +189,28 @@ def _vectorized_normalized_cc_complex(a: torch.Tensor, b: torch.Tensor) -> torch
     )
 
     return correlation
+
+
+def fsc(
+    a: torch.Tensor, b: torch.Tensor, rfft_mask: torch.Tensor | None = None
+) -> torch.Tensor:
+    """Fourier ring/shell correlation between two square/cubic images.
+
+    .. deprecated::
+        Use `fourier_ring_correlation` for 2D or `fourier_shell_correlation` for 3D.
+
+    Args:
+        a: Input tensor (2D or 3D)
+        b: Input tensor (2D or 3D), same shape as a
+        rfft_mask: Optional mask for rfft indices
+
+    Returns
+    -------
+        Correlation values of shape (n_shells,)
+    """
+    if a.ndim == 2:
+        return fourier_ring_correlation(a, b, rfft_mask)
+    elif a.ndim == 3:
+        return fourier_shell_correlation(a, b, rfft_mask)
+    else:
+        raise ValueError("images must be 2D or 3D.")
