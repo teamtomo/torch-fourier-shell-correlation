@@ -9,7 +9,7 @@ def _prepare_fft_data(
     a_fft: torch.Tensor,
     b_fft: torch.Tensor,
     frequency_grid: torch.Tensor,
-    rfft_mask: torch.Tensor | None,
+    fft_mask: torch.Tensor | None,
     ndim: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Prepare FFT data by applying mask and flattening spatial dimensions.
@@ -18,18 +18,18 @@ def _prepare_fft_data(
         a_fft: FFT of first tensor
         b_fft: FFT of second tensor
         frequency_grid: Frequency grid
-        rfft_mask: Optional mask for rfft indices
+        fft_mask: Optional mask for fft indices
         ndim: Number of spatial dimensions
 
     Returns
     -------
         Tuple of (a_fft_flat, b_fft_flat, frequencies)
     """
-    if rfft_mask is not None:
+    if fft_mask is not None:
         # Apply mask to FFTs and frequency grid
-        a_fft_flat = a_fft[..., rfft_mask]  # (..., n_masked_freqs)
-        b_fft_flat = b_fft[..., rfft_mask]
-        frequencies = frequency_grid[rfft_mask]
+        a_fft_flat = a_fft[..., fft_mask]  # (..., n_masked_freqs)
+        b_fft_flat = b_fft[..., fft_mask]
+        frequencies = frequency_grid[fft_mask]
     else:
         # Flatten spatial dimensions while preserving batch dimensions
         original_shape = a_fft.shape
