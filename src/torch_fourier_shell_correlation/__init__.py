@@ -9,6 +9,16 @@ except PackageNotFoundError:
 __author__ = "Alister Burt"
 __email__ = "alisterburt@gmail.com"
 
-from .fsc import fourier_ring_correlation, fourier_shell_correlation, fsc
+from .fsc import (
+    fourier_correlation,
+    fourier_ring_correlation,
+    fourier_shell_correlation,
+    fsc,
+)
 
-__all__ = ["fourier_ring_correlation", "fourier_shell_correlation", "fsc"]
+__all__ = [
+    "fourier_ring_correlation",
+    "fourier_shell_correlation",
+    "fourier_correlation",
+    "fsc",
+]
