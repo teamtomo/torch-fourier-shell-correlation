@@ -158,3 +158,93 @@ def test_edge_cases():
 
     assert torch.allclose(result_batch[0], result_individual_0)
     assert torch.allclose(result_batch[1], result_individual_1)
+
+
+def test_rectangular_images():
+    """Test that rectangular images work correctly."""
+    torch.manual_seed(42)
+
+    # Test 2D rectangular images
+    a_rect = torch.rand((8, 12))  # 8x12 rectangular image
+    b_rect = torch.rand((8, 12))
+
+    # Should work without error
+    result_rect = fourier_ring_correlation(a_rect, b_rect)
+
+    # Should have min(8, 12) // 2 + 1 = 5 bins
+    assert result_rect.shape == (5,)
+
+    # Correlation should be bounded between -1 and 1
+    assert torch.all(result_rect >= -1)
+    assert torch.all(result_rect <= 1)
+
+    # Test 3D rectangular volumes
+    a_rect_3d = torch.rand((8, 10, 12))  # 8x10x12 rectangular volume
+    b_rect_3d = torch.rand((8, 10, 12))
+
+    # Should work without error
+    result_rect_3d = fourier_shell_correlation(a_rect_3d, b_rect_3d)
+
+    # Should have min(8, 10, 12) // 2 + 1 = 5 bins
+    assert result_rect_3d.shape == (5,)
+
+    # Correlation should be bounded between -1 and 1
+    assert torch.all(result_rect_3d >= -1)
+    assert torch.all(result_rect_3d <= 1)
+
+
+def test_rectangular_images_batched():
+    """Test that rectangular images work correctly with batching."""
+    torch.manual_seed(42)
+
+    # Test 2D rectangular images with batching
+    batch_size = 3
+    a_rect_batch = torch.rand((batch_size, 8, 12))  # 8x12 rectangular images
+    b_rect_batch = torch.rand((batch_size, 8, 12))
+
+    # Should work without error
+    result_rect_batch = fourier_ring_correlation(a_rect_batch, b_rect_batch)
+
+    # Should have shape (batch_size, min(8, 12) // 2 + 1) = (3, 5)
+    assert result_rect_batch.shape == (3, 5)
+
+    # Correlation should be bounded between -1 and 1
+    assert torch.all(result_rect_batch >= -1)
+    assert torch.all(result_rect_batch <= 1)
+
+    # Test 3D rectangular volumes with batching
+    a_rect_3d_batch = torch.rand((batch_size, 6, 8, 10))  # 6x8x10 rectangular volumes
+    b_rect_3d_batch = torch.rand((batch_size, 6, 8, 10))
+
+    # Should work without error
+    result_rect_3d_batch = fourier_shell_correlation(a_rect_3d_batch, b_rect_3d_batch)
+
+    # Should have shape (batch_size, min(6, 8, 10) // 2 + 1) = (3, 4)
+    assert result_rect_3d_batch.shape == (3, 4)
+
+    # Correlation should be bounded between -1 and 1
+    assert torch.all(result_rect_3d_batch >= -1)
+    assert torch.all(result_rect_3d_batch <= 1)
+
+
+def test_identical_rectangular_images():
+    """Test that identical rectangular images produce correlation of 1."""
+    torch.manual_seed(42)
+
+    # Test 2D identical rectangular images
+    a_rect = torch.rand((8, 12))  # 8x12 rectangular image
+    b_rect = a_rect.clone()
+
+    result_rect = fourier_ring_correlation(a_rect, b_rect)
+
+    # Identical images should have correlation close to 1
+    assert torch.allclose(result_rect, torch.ones_like(result_rect), atol=1e-6)
+
+    # Test 3D identical rectangular volumes
+    a_rect_3d = torch.rand((6, 8, 10))  # 6x8x10 rectangular volume
+    b_rect_3d = a_rect_3d.clone()
+
+    result_rect_3d = fourier_shell_correlation(a_rect_3d, b_rect_3d)
+
+    # Identical images should have correlation close to 1
+    assert torch.allclose(result_rect_3d, torch.ones_like(result_rect_3d), atol=1e-6)

@@ -2,7 +2,6 @@
 
 from typing import Sequence
 
-import einops
 import torch
 
 
@@ -43,34 +42,31 @@ def _prepare_fft_data(
     return a_fft_flat, b_fft_flat, frequencies
 
 
-def _compute_frequency_bins(image_size: int, device: torch.device) -> torch.Tensor:
-    """Compute frequency bin centers for shell/ring correlation.
+def _compute_frequency_bins_weighted(
+    spatial_dims: Sequence[int], device: torch.device
+) -> torch.Tensor:
+    """Compute frequency bin centers for weighted shell/ring correlation.
 
     Args:
-        image_size: Size of the image along one dimension
+        spatial_dims: Shape of the spatial dimensions
         device: Device to create tensors on
 
     Returns
     -------
         Frequency bin centers with shape (n_bins,)
     """
-    bin_centers = torch.fft.rfftfreq(image_size, device=device)
-    df = 1 / image_size
+    # Use minimum dimension to define number of shells
+    # This ensures all frequency components can contribute via interpolation
+    min_dim = min(spatial_dims)
+    bin_centers = torch.fft.rfftfreq(min_dim, device=device)
 
-    # Setup to split data at midpoint between frequency bin centers
-    bin_centers = torch.cat([bin_centers, torch.as_tensor([0.5 + df], device=device)])
-    bin_centers = bin_centers.unfold(dimension=0, size=2, step=1)  # (n_shells, 2)
-    split_points = einops.reduce(
-        bin_centers, "shells high_low -> shells", reduction="mean"
-    )
-
-    return split_points
+    return bin_centers
 
 
-def _compute_shell_indices(
+def _frequency_to_bin_coordinates(
     frequencies: torch.Tensor, bin_centers: torch.Tensor
-) -> list[torch.Tensor]:
-    """Compute indices for each frequency shell.
+) -> torch.Tensor:
+    """Convert frequencies to continuous bin coordinates using interpolation.
 
     Args:
         frequencies: Flattened frequency magnitudes
@@ -78,74 +74,126 @@ def _compute_shell_indices(
 
     Returns
     -------
-        List of index tensors for each shell
+        Continuous bin coordinates for each frequency
     """
-    # Find indices of all components in each shell
-    sorted_frequencies, sort_idx = torch.sort(frequencies, descending=False)
-    split_idx = torch.searchsorted(sorted_frequencies, bin_centers)
-    shell_indices = list(torch.tensor_split(sort_idx, split_idx.cpu())[:-1])
+    # Use searchsorted to find the bin each frequency would fall into
+    bin_indices = torch.searchsorted(bin_centers, frequencies, right=True) - 1
 
-    return shell_indices
+    # Handle edge cases
+    bin_indices = torch.clamp(bin_indices, 0, len(bin_centers) - 2)
+
+    # Calculate fractional position within the bin
+    left_centers = bin_centers[bin_indices]
+    right_centers = bin_centers[bin_indices + 1]
+
+    # Avoid division by zero for the last bin
+    bin_width = right_centers - left_centers
+    bin_width = torch.where(bin_width == 0, torch.ones_like(bin_width), bin_width)
+
+    # Linear interpolation coordinate
+    bin_coords = bin_indices.float() + (frequencies - left_centers) / bin_width
+
+    return bin_coords
 
 
-def _compute_shell_correlations(
+def _calculate_interpolation_weights(
+    bin_coords: torch.Tensor, target_bin: int
+) -> torch.Tensor:
+    """Calculate linear interpolation weights for a target bin.
+
+    Args:
+        bin_coords: Continuous bin coordinates for each frequency
+        target_bin: Target bin index
+
+    Returns
+    -------
+        Interpolation weights for the target bin
+    """
+    # Distance from each frequency to the target bin
+    distances = torch.abs(bin_coords - target_bin)
+
+    # Linear interpolation: weight = max(0, 1 - distance)
+    weights = torch.clamp(1.0 - distances, min=0.0)
+
+    return weights
+
+
+def _compute_shell_correlations_weighted(
     a_fft: torch.Tensor,
     b_fft: torch.Tensor,
-    shell_indices: list[torch.Tensor],
+    frequencies: torch.Tensor,
+    bin_centers: torch.Tensor,
     batch_dims: Sequence[int],
 ) -> torch.Tensor:
-    """Compute normalized cross correlation for each shell.
+    """Compute weighted normalized cross correlation for each shell using interpolation.
 
     Args:
         a_fft: Flattened FFT data for first tensor
         b_fft: Flattened FFT data for second tensor
-        shell_indices: List of indices for each shell
+        frequencies: Flattened frequency magnitudes
+        bin_centers: Frequency bin centers
         batch_dims: Batch dimensions shape
 
     Returns
     -------
         Correlation values for each shell with shape (*batch_dims, n_shells)
     """
+    n_bins = len(bin_centers)
     correlation_results = []
 
-    # Handle DC component (shell 0) - always 1.0
-    correlation_results.append(torch.ones(batch_dims, device=a_fft.device))
+    # Convert frequencies to continuous bin coordinates
+    bin_coords = _frequency_to_bin_coordinates(frequencies, bin_centers)
 
-    # Process each shell (vectorized over batch dimension)
-    for idx in shell_indices[1:]:
-        if len(idx) == 0:
-            # Empty shell
-            correlation_results.append(torch.zeros(batch_dims, device=a_fft.device))
+    # Process each shell using weighted interpolation
+    for bin_idx in range(n_bins):
+        if bin_idx == 0:
+            # DC component always has FSC = 1.0
+            correlation_results.append(torch.ones(batch_dims, device=a_fft.device))
         else:
-            # Get FFT values for this shell for all batch items
-            a_shell = a_fft[..., idx]  # (..., n_freqs_in_shell)
-            b_shell = b_fft[..., idx]  # (..., n_freqs_in_shell)
+            # Calculate weights for this bin
+            weights = _calculate_interpolation_weights(bin_coords, bin_idx)
 
-            # Vectorized normalized cross correlation
-            correlation = _normalized_cc_complex(a_shell, b_shell)
-            correlation_results.append(correlation)
+            # Only include components with non-zero weights
+            mask = weights > 0
+            if mask.sum() > 0:
+                # Get weighted FFT values for all batch items
+                a_masked = a_fft[..., mask]  # (..., n_nonzero_weights)
+                b_masked = b_fft[..., mask]
+                weights_nonzero = weights[mask]
+
+                # Weighted normalized cross correlation
+                correlation = _weighted_normalized_cc_complex(
+                    a_masked, b_masked, weights_nonzero
+                )
+                correlation_results.append(correlation)
+            else:
+                # Empty shell
+                correlation_results.append(torch.zeros(batch_dims, device=a_fft.device))
 
     # Stack results along last dimension
     return torch.stack(correlation_results, dim=-1)  # (..., n_shells)
 
 
-def _normalized_cc_complex(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Vectorized normalized cross correlation for batched complex tensors.
+def _weighted_normalized_cc_complex(
+    a: torch.Tensor, b: torch.Tensor, weights: torch.Tensor
+) -> torch.Tensor:
+    """Calculate weighted normalized cross correlation for batched tensors.
 
     Args:
-        a: Complex tensor of shape (batch_size, n_freqs_in_shell)
-        b: Complex tensor of shape (batch_size, n_freqs_in_shell)
+        a: Complex tensor (..., n_freqs)
+        b: Complex tensor (..., n_freqs)
+        weights: Weight values (n_freqs,)
 
     Returns
     -------
-        Normalized correlation for each batch item, shape (batch_size,)
+        Weighted normalized correlation for each batch item
     """
-    # Compute dot product along frequency dimension for each batch item
-    correlation = torch.sum(a * torch.conj(b), dim=-1)  # (batch_size,)
+    # Weighted correlation (sum over frequency dimension)
+    correlation = torch.sum(weights * a * torch.conj(b), dim=-1)
 
-    # Compute norms along frequency dimension for each batch item
-    norm_a = torch.linalg.norm(a, dim=-1)  # (batch_size,)
-    norm_b = torch.linalg.norm(b, dim=-1)  # (batch_size,)
+    # Weighted norms
+    norm_a = torch.sqrt(torch.sum(weights * torch.abs(a) ** 2, dim=-1))
+    norm_b = torch.sqrt(torch.sum(weights * torch.abs(b) ** 2, dim=-1))
 
     # Normalize, handling potential division by zero
     denominator = norm_a * norm_b

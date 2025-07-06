@@ -6,9 +6,8 @@ import torch
 from torch_grid_utils import fftfreq_grid
 
 from .utils import (
-    _compute_frequency_bins,
-    _compute_shell_correlations,
-    _compute_shell_indices,
+    _compute_frequency_bins_weighted,
+    _compute_shell_correlations_weighted,
     _prepare_fft_data,
 )
 
@@ -17,6 +16,8 @@ def fourier_ring_correlation(
     a: torch.Tensor, b: torch.Tensor, rfft_mask: torch.Tensor | None = None
 ) -> torch.Tensor:
     """Fourier ring correlation between two 2D images with batching support.
+
+    Supports both square and rectangular images using weighted interpolation.
 
     Args:
         a: Input tensor of shape (..., h, w)
@@ -33,17 +34,13 @@ def fourier_ring_correlation(
     if a.shape != b.shape:
         raise ValueError("Input tensors must have the same shape.")
 
-    # Validate spatial dimensions are equal (for proper ring correlation)
-    spatial_dims = a.shape[-2:]
-    if len(set(spatial_dims)) != 1:
-        raise ValueError(
-            "All spatial dimensions must be equal for proper ring correlation."
-        )
-
     # Compute FFT
     spatial_dims_list = [-2, -1]  # Last 2 dimensions
     a_fft = torch.fft.rfftn(a, dim=spatial_dims_list)
     b_fft = torch.fft.rfftn(b, dim=spatial_dims_list)
+
+    # Get spatial dimensions
+    spatial_dims = a.shape[-2:]
 
     return fourier_correlation(a_fft, b_fft, spatial_dims, rfft_mask)
 
@@ -52,6 +49,8 @@ def fourier_shell_correlation(
     a: torch.Tensor, b: torch.Tensor, rfft_mask: torch.Tensor | None = None
 ) -> torch.Tensor:
     """Fourier shell correlation between two 3D images with batching support.
+
+    Supports both cubic and rectangular volumes using weighted interpolation.
 
     Args:
         a: Input tensor of shape (..., d, h, w)
@@ -68,17 +67,13 @@ def fourier_shell_correlation(
     if a.shape != b.shape:
         raise ValueError("Input tensors must have the same shape.")
 
-    # Validate spatial dimensions are equal (for proper shell correlation)
-    spatial_dims = a.shape[-3:]
-    if len(set(spatial_dims)) != 1:
-        raise ValueError(
-            "All spatial dimensions must be equal for proper shell correlation."
-        )
-
     # Compute FFT
     spatial_dims_list = [-3, -2, -1]  # Last 3 dimensions
     a_fft = torch.fft.rfftn(a, dim=spatial_dims_list)
     b_fft = torch.fft.rfftn(b, dim=spatial_dims_list)
+
+    # Get spatial dimensions
+    spatial_dims = a.shape[-3:]
 
     return fourier_correlation(a_fft, b_fft, spatial_dims, rfft_mask)
 
@@ -89,7 +84,7 @@ def fourier_correlation(
     spatial_dims: Sequence[int],
     rfft_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Compute fourier correlation from FFT data with batching support.
+    """Compute fourier correlation from FFT data supporting rectangular shapes.
 
     Args:
         a_fft: FFT of first tensor with shape (..., *fft_shape)
@@ -104,12 +99,6 @@ def fourier_correlation(
     # Input validation
     if a_fft.shape != b_fft.shape:
         raise ValueError("FFT tensors must have the same shape.")
-
-    # Validate spatial dimensions are equal (for proper shell/ring correlation)
-    if len(set(spatial_dims)) != 1:
-        raise ValueError(
-            "All spatial dimensions must be equal for proper shell/ring correlation."
-        )
 
     # Validate rfft_mask
     fft_shape = a_fft.shape[-len(spatial_dims) :]
@@ -130,13 +119,16 @@ def fourier_correlation(
         a_fft, b_fft, frequency_grid, rfft_mask, len(spatial_dims)
     )
 
-    # Compute frequency bins and shell indices
-    bin_centers = _compute_frequency_bins(spatial_dims[0], a_fft.device)
-    shell_indices = _compute_shell_indices(frequencies, bin_centers)
+    # Compute frequency bins using weighted approach
+    bin_centers = _compute_frequency_bins_weighted(spatial_dims, a_fft.device)
 
-    # Compute correlations for each shell
-    correlations = _compute_shell_correlations(
-        a_fft_flat, b_fft_flat, shell_indices, a_fft.shape[: -len(spatial_dims)]
+    # Compute correlations using weighted interpolation
+    correlations = _compute_shell_correlations_weighted(
+        a_fft_flat,
+        b_fft_flat,
+        frequencies,
+        bin_centers,
+        a_fft.shape[: -len(spatial_dims)],
     )
 
     return torch.real(correlations)
