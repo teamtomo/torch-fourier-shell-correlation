@@ -2,6 +2,7 @@
 
 from typing import Sequence
 
+import einops
 import torch
 
 
@@ -31,12 +32,19 @@ def _prepare_fft_data(
         b_fft_flat = b_fft[..., fft_mask]
         frequencies = frequency_grid[fft_mask]
     else:
-        # Flatten spatial dimensions while preserving batch dimensions
-        original_shape = a_fft.shape
-        batch_shape = original_shape[:-ndim]
-        spatial_size = torch.prod(torch.tensor(original_shape[-ndim:]))
-        a_fft_flat = a_fft.view(*batch_shape, spatial_size)
-        b_fft_flat = b_fft.view(*batch_shape, spatial_size)
+        # Flatten spatial dimensions while preserving batch dimensions using einops
+        if ndim == 2:
+            # 2D case: (..., h, w) -> (..., h*w)
+            a_fft_flat = einops.rearrange(a_fft, "... h w -> ... (h w)")
+            b_fft_flat = einops.rearrange(b_fft, "... h w -> ... (h w)")
+        elif ndim == 3:
+            # 3D case: (..., d, h, w) -> (..., d*h*w)
+            a_fft_flat = einops.rearrange(a_fft, "... d h w -> ... (d h w)")
+            b_fft_flat = einops.rearrange(b_fft, "... d h w -> ... (d h w)")
+        else:
+            raise ValueError(f"Unsupported ndim: {ndim}. Only 2D and 3D are supported.")
+
+        # Flatten frequency grid
         frequencies = torch.flatten(frequency_grid)
 
     return a_fft_flat, b_fft_flat, frequencies
