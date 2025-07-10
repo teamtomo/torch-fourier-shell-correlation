@@ -39,10 +39,10 @@ def fourier_ring_correlation(
     a_fft = torch.fft.rfftn(a, dim=spatial_dims_list)
     b_fft = torch.fft.rfftn(b, dim=spatial_dims_list)
 
-    # Get spatial dimensions
-    spatial_dims = a.shape[-2:]
+    # Get image shape
+    image_shape = a.shape[-2:]
 
-    return fourier_correlation(a_fft, b_fft, spatial_dims, fft_mask, rfft=True)
+    return fourier_correlation(a_fft, b_fft, image_shape, fft_mask, rfft=True)
 
 
 def fourier_shell_correlation(
@@ -72,25 +72,26 @@ def fourier_shell_correlation(
     a_fft = torch.fft.rfftn(a, dim=spatial_dims_list)
     b_fft = torch.fft.rfftn(b, dim=spatial_dims_list)
 
-    # Get spatial dimensions
-    spatial_dims = a.shape[-3:]
+    # Get image shape
+    image_shape = a.shape[-3:]
 
-    return fourier_correlation(a_fft, b_fft, spatial_dims, fft_mask, rfft=True)
+    return fourier_correlation(a_fft, b_fft, image_shape, fft_mask, rfft=True)
 
 
 def fourier_correlation(
     a_fft: torch.Tensor,
     b_fft: torch.Tensor,
-    spatial_dims: Sequence[int],
+    image_shape: Sequence[int],
     fft_mask: torch.Tensor | None = None,
     rfft: bool = True,
 ) -> torch.Tensor:
     """Compute fourier correlation from FFT data supporting rectangular shapes.
 
     Args:
-        a_fft: FFT of first tensor with shape (..., *fft_shape)
-        b_fft: FFT of second tensor with shape (..., *fft_shape)
-        spatial_dims: Shape of the spatial dimensions before FFT
+        a_fft: (..., *fft_shape) tensor containing FFT of a (..., *image_shape) tensor
+        b_fft: (..., *fft_shape) tensor containing FFT of a (..., *image_shape) tensor
+        image_shape: Size of spatial dimensions before FFT (e.g. (h, w) or (d, h, w))
+            Note: For real FFTs, fft_shape = (*image_shape[:-1], image_shape[-1]//2 + 1)
         fft_mask: Optional mask for fft indices
         rfft: Whether the FFT data is from rfft (True) or fft (False)
 
@@ -103,13 +104,13 @@ def fourier_correlation(
         raise ValueError("FFT tensors must have the same shape.")
 
     # Validate fft_mask
-    fft_shape = a_fft.shape[-len(spatial_dims) :]
+    fft_shape = a_fft.shape[-len(image_shape) :]
     if fft_mask is not None and fft_mask.shape != fft_shape:
         raise ValueError("fft_mask must have same shape as fft output.")
 
     # Compute frequency grid and prepare FFT data
     frequency_grid = fftfreq_grid(
-        image_shape=spatial_dims,
+        image_shape=image_shape,
         rfft=rfft,
         fftshift=False,
         norm=True,
@@ -118,11 +119,11 @@ def fourier_correlation(
 
     # Apply mask and flatten spatial dimensions
     a_fft_flat, b_fft_flat, frequencies = _prepare_fft_data(
-        a_fft, b_fft, frequency_grid, fft_mask, len(spatial_dims)
+        a_fft, b_fft, frequency_grid, fft_mask, len(image_shape)
     )
 
     # Compute frequency bins using weighted approach
-    bin_centers = _compute_frequency_bins_weighted(spatial_dims, a_fft.device)
+    bin_centers = _compute_frequency_bins_weighted(image_shape, a_fft.device)
 
     # Compute correlations using weighted interpolation
     correlations = _compute_shell_correlations_weighted(
@@ -130,7 +131,7 @@ def fourier_correlation(
         b_fft_flat,
         frequencies,
         bin_centers,
-        a_fft.shape[: -len(spatial_dims)],
+        a_fft.shape[: -len(image_shape)],
     )
 
     return torch.real(correlations)
