@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from torch_fourier_shell_correlation import (
@@ -248,3 +249,106 @@ def test_identical_rectangular_images():
 
     # Identical images should have correlation close to 1
     assert torch.allclose(result_rect_3d, torch.ones_like(result_rect_3d), atol=1e-6)
+
+
+def test_broadcasting_one_to_many():
+    """Test broadcasting: one tensor to many (e.g., a: (N, h, w), b: (h, w))."""
+    torch.manual_seed(42)
+
+    # Test 2D broadcasting
+    a_many = torch.rand((5, 8, 12))  # Many images
+    b_single = torch.rand((8, 12))  # Single image
+
+    result = fourier_ring_correlation(a_many, b_single)
+
+    # Should have shape (5, min(8, 12) // 2 + 1) = (5, 5)
+    assert result.shape == (5, 5)
+
+    # Correlation should be bounded between -1 and 1
+    assert torch.all(result >= -1)
+    assert torch.all(result <= 1)
+
+    # Test 3D broadcasting
+    a_many_3d = torch.rand((3, 6, 8, 10))  # Many volumes
+    b_single_3d = torch.rand((6, 8, 10))  # Single volume
+
+    result_3d = fourier_shell_correlation(a_many_3d, b_single_3d)
+
+    # Should have shape (3, min(6, 8, 10) // 2 + 1) = (3, 4)
+    assert result_3d.shape == (3, 4)
+
+    # Correlation should be bounded between -1 and 1
+    assert torch.all(result_3d >= -1)
+    assert torch.all(result_3d <= 1)
+
+
+def test_broadcasting_many_to_many():
+    """Test broadcasting: many to many (e.g., a: (10, 1, h, w), b: (1, 10, h, w))."""
+    torch.manual_seed(42)
+
+    # Test 2D broadcasting
+    a_many = torch.rand((10, 1, 8, 12))  # Shape for broadcasting
+    b_many = torch.rand((1, 10, 8, 12))  # Shape for broadcasting
+
+    result = fourier_ring_correlation(a_many, b_many)
+
+    # Should have shape (10, 10, min(8, 12) // 2 + 1) = (10, 10, 5)
+    assert result.shape == (10, 10, 5)
+
+    # Correlation should be bounded between -1 and 1
+    assert torch.all(result >= -1)
+    assert torch.all(result <= 1)
+
+    # Test 3D broadcasting
+    a_many_3d = torch.rand((4, 1, 6, 8, 10))  # Shape for broadcasting
+    b_many_3d = torch.rand((1, 4, 6, 8, 10))  # Shape for broadcasting
+
+    result_3d = fourier_shell_correlation(a_many_3d, b_many_3d)
+
+    # Should have shape (4, 4, min(6, 8, 10) // 2 + 1) = (4, 4, 4)
+    assert result_3d.shape == (4, 4, 4)
+
+    # Correlation should be bounded between -1 and 1
+    assert torch.all(result_3d >= -1)
+    assert torch.all(result_3d <= 1)
+
+
+def test_broadcasting_vs_individual():
+    """Test that broadcasting gives same results as individual computations."""
+    torch.manual_seed(42)
+
+    # Create test data
+    a_single = torch.rand((8, 12))  # Single image
+    b_batch = torch.rand((3, 8, 12))  # Batch of images
+
+    # Compute using broadcasting
+    result_broadcast = fourier_ring_correlation(b_batch, a_single)
+
+    # Compute individually
+    results_individual = []
+    for i in range(3):
+        result_individual = fourier_ring_correlation(b_batch[i], a_single)
+        results_individual.append(result_individual)
+    result_individual_stacked = torch.stack(results_individual)
+
+    # Should be identical (within numerical precision)
+    assert torch.allclose(result_broadcast, result_individual_stacked, atol=1e-6)
+
+
+def test_broadcasting_invalid_spatial_dims():
+    """Test that broadcasting fails when spatial dimensions don't match."""
+    torch.manual_seed(42)
+
+    # Test 2D with mismatched spatial dimensions
+    a = torch.rand((2, 8, 12))
+    b = torch.rand((2, 10, 14))  # Different spatial dimensions
+
+    with pytest.raises(ValueError, match="Spatial dimensions must match"):
+        fourier_ring_correlation(a, b)
+
+    # Test 3D with mismatched spatial dimensions
+    a_3d = torch.rand((2, 6, 8, 10))
+    b_3d = torch.rand((2, 8, 10, 12))  # Different spatial dimensions
+
+    with pytest.raises(ValueError, match="Spatial dimensions must match"):
+        fourier_shell_correlation(a_3d, b_3d)

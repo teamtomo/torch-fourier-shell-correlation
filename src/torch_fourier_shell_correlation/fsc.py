@@ -15,7 +15,7 @@ from .utils import (
 def fourier_ring_correlation(
     a: torch.Tensor, b: torch.Tensor, fft_mask: torch.Tensor | None = None
 ) -> torch.Tensor:
-    """Fourier ring correlation between two 2D images with batching support.
+    """Fourier ring correlation between two 2D images with batching.
 
     Supports both square and rectangular images using weighted interpolation.
 
@@ -26,20 +26,27 @@ def fourier_ring_correlation(
 
     Returns
     -------
-        Correlation values of shape (..., min(h, w) // 2 + 1)
+        Correlation values of shape (broadcast(...), min(h, w) // 2 + 1)
     """
     # Input validation
     if a.ndim < 2:
         raise ValueError("Input tensors must have at least 2 dimensions.")
-    if a.shape != b.shape:
-        raise ValueError("Input tensors must have the same shape.")
+    if b.ndim < 2:
+        raise ValueError("Input tensors must have at least 2 dimensions.")
+
+    # Enforce that spatial dimensions match
+    if a.shape[-2:] != b.shape[-2:]:
+        raise ValueError(
+            f"Spatial dimensions must match: a.shape[-2:] = {a.shape[-2:]} "
+            f"vs b.shape[-2:] = {b.shape[-2:]}"
+        )
 
     # Compute FFT
     spatial_dims_list = [-2, -1]  # Last 2 dimensions
     a_fft = torch.fft.rfftn(a, dim=spatial_dims_list)
     b_fft = torch.fft.rfftn(b, dim=spatial_dims_list)
 
-    # Get image shape
+    # Get image shape (spatial dimensions)
     image_shape = a.shape[-2:]
 
     return fourier_correlation(a_fft, b_fft, image_shape, fft_mask, rfft=True)
@@ -48,7 +55,7 @@ def fourier_ring_correlation(
 def fourier_shell_correlation(
     a: torch.Tensor, b: torch.Tensor, fft_mask: torch.Tensor | None = None
 ) -> torch.Tensor:
-    """Fourier shell correlation between two 3D images with batching support.
+    """Fourier shell correlation between two 3D images with batching.
 
     Supports both cubic and rectangular volumes using weighted interpolation.
 
@@ -59,20 +66,27 @@ def fourier_shell_correlation(
 
     Returns
     -------
-        Correlation values of shape (..., min(d, h, w) // 2 + 1)
+        Correlation values of shape (broadcast(...), min(d, h, w) // 2 + 1)
     """
     # Input validation
     if a.ndim < 3:
         raise ValueError("Input tensors must have at least 3 dimensions.")
-    if a.shape != b.shape:
-        raise ValueError("Input tensors must have the same shape.")
+    if b.ndim < 3:
+        raise ValueError("Input tensors must have at least 3 dimensions.")
+
+    # Enforce that spatial dimensions match
+    if a.shape[-3:] != b.shape[-3:]:
+        raise ValueError(
+            f"Spatial dimensions must match: a.shape[-3:] = {a.shape[-3:]} "
+            f"vs b.shape[-3:] = {b.shape[-3:]}"
+        )
 
     # Compute FFT
     spatial_dims_list = [-3, -2, -1]  # Last 3 dimensions
     a_fft = torch.fft.rfftn(a, dim=spatial_dims_list)
     b_fft = torch.fft.rfftn(b, dim=spatial_dims_list)
 
-    # Get image shape
+    # Get image shape (spatial dimensions)
     image_shape = a.shape[-3:]
 
     return fourier_correlation(a_fft, b_fft, image_shape, fft_mask, rfft=True)
@@ -99,9 +113,12 @@ def fourier_correlation(
     -------
         Fourier correlation values with shape (..., n_shells)
     """
-    # Input validation
-    if a_fft.shape != b_fft.shape:
-        raise ValueError("FFT tensors must have the same shape.")
+    # Input validation - check that FFT tensors can be broadcast together
+    try:
+        # This will raise an error if tensors can't be broadcast
+        torch.broadcast_shapes(a_fft.shape, b_fft.shape)
+    except RuntimeError as e:
+        raise ValueError(f"FFT tensors must be broadcastable: {e}") from e
 
     # Validate fft_mask
     fft_shape = a_fft.shape[-len(image_shape) :]
@@ -125,13 +142,17 @@ def fourier_correlation(
     # Compute frequency bins using weighted approach
     bin_centers = _compute_frequency_bins_weighted(image_shape, a_fft.device)
 
+    # Compute broadcast batch dimensions for correlation computation
+    broadcast_shape = torch.broadcast_shapes(a_fft.shape, b_fft.shape)
+    batch_dims = broadcast_shape[: -len(image_shape)]
+
     # Compute correlations using weighted interpolation
     correlations = _compute_shell_correlations_weighted(
         a_fft_flat,
         b_fft_flat,
         frequencies,
         bin_centers,
-        a_fft.shape[: -len(image_shape)],
+        batch_dims,
     )
 
     return torch.real(correlations)
