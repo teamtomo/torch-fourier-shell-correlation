@@ -1,73 +1,183 @@
-from typing import Sequence, Tuple
+"""Fourier shell correlation between two 2D or 3D images."""
 
-import einops
+from typing import Sequence
+
 import torch
-
 from torch_grid_utils import fftfreq_grid
+
+from .utils import (
+    _compute_frequency_bins_weighted,
+    _compute_shell_correlations_weighted,
+    _prepare_fft_data,
+)
+
+
+def fourier_ring_correlation(
+    a: torch.Tensor, b: torch.Tensor, fft_mask: torch.Tensor | None = None
+) -> torch.Tensor:
+    """Fourier ring correlation between two 2D images with batching.
+
+    Supports both square and rectangular images using weighted interpolation.
+
+    Args:
+        a: Input tensor of shape (..., h, w)
+        b: Input tensor of shape (..., h, w)
+        fft_mask: Optional mask for fft, shape should match fft output
+
+    Returns
+    -------
+        Correlation values of shape (broadcast(...), min(h, w) // 2 + 1)
+    """
+    # Input validation
+    if a.ndim < 2:
+        raise ValueError("Input tensors must have at least 2 dimensions.")
+    if b.ndim < 2:
+        raise ValueError("Input tensors must have at least 2 dimensions.")
+
+    # Enforce that spatial dimensions match
+    if a.shape[-2:] != b.shape[-2:]:
+        raise ValueError(
+            f"Spatial dimensions must match: a.shape[-2:] = {a.shape[-2:]} "
+            f"vs b.shape[-2:] = {b.shape[-2:]}"
+        )
+
+    # Compute FFT
+    spatial_dims_list = [-2, -1]  # Last 2 dimensions
+    a_fft = torch.fft.rfftn(a, dim=spatial_dims_list)
+    b_fft = torch.fft.rfftn(b, dim=spatial_dims_list)
+
+    # Get image shape (spatial dimensions)
+    image_shape = a.shape[-2:]
+
+    return fourier_correlation(a_fft, b_fft, image_shape, fft_mask, rfft=True)
+
+
+def fourier_shell_correlation(
+    a: torch.Tensor, b: torch.Tensor, fft_mask: torch.Tensor | None = None
+) -> torch.Tensor:
+    """Fourier shell correlation between two 3D images with batching.
+
+    Supports both cubic and rectangular volumes using weighted interpolation.
+
+    Args:
+        a: Input tensor of shape (..., d, h, w)
+        b: Input tensor of shape (..., d, h, w)
+        fft_mask: Optional mask for fft, shape should match fft output
+
+    Returns
+    -------
+        Correlation values of shape (broadcast(...), min(d, h, w) // 2 + 1)
+    """
+    # Input validation
+    if a.ndim < 3:
+        raise ValueError("Input tensors must have at least 3 dimensions.")
+    if b.ndim < 3:
+        raise ValueError("Input tensors must have at least 3 dimensions.")
+
+    # Enforce that spatial dimensions match
+    if a.shape[-3:] != b.shape[-3:]:
+        raise ValueError(
+            f"Spatial dimensions must match: a.shape[-3:] = {a.shape[-3:]} "
+            f"vs b.shape[-3:] = {b.shape[-3:]}"
+        )
+
+    # Compute FFT
+    spatial_dims_list = [-3, -2, -1]  # Last 3 dimensions
+    a_fft = torch.fft.rfftn(a, dim=spatial_dims_list)
+    b_fft = torch.fft.rfftn(b, dim=spatial_dims_list)
+
+    # Get image shape (spatial dimensions)
+    image_shape = a.shape[-3:]
+
+    return fourier_correlation(a_fft, b_fft, image_shape, fft_mask, rfft=True)
+
+
+def fourier_correlation(
+    a_fft: torch.Tensor,
+    b_fft: torch.Tensor,
+    image_shape: Sequence[int],
+    fft_mask: torch.Tensor | None = None,
+    rfft: bool = True,
+) -> torch.Tensor:
+    """Compute fourier correlation from FFT data supporting rectangular shapes.
+
+    Args:
+        a_fft: (..., *fft_shape) tensor containing FFT of a (..., *image_shape) tensor
+        b_fft: (..., *fft_shape) tensor containing FFT of a (..., *image_shape) tensor
+        image_shape: Size of spatial dimensions before FFT (e.g. (h, w) or (d, h, w))
+            Note: For real FFTs, fft_shape = (*image_shape[:-1], image_shape[-1]//2 + 1)
+        fft_mask: Optional mask for fft indices
+        rfft: Whether the FFT data is from rfft (True) or fft (False)
+
+    Returns
+    -------
+        Fourier correlation values with shape (..., n_shells)
+    """
+    # Input validation - check that FFT tensors can be broadcast together
+    try:
+        # This will raise an error if tensors can't be broadcast
+        torch.broadcast_shapes(a_fft.shape, b_fft.shape)
+    except RuntimeError as e:
+        raise ValueError(f"FFT tensors must be broadcastable: {e}") from e
+
+    # Validate fft_mask
+    fft_shape = a_fft.shape[-len(image_shape) :]
+    if fft_mask is not None and fft_mask.shape != fft_shape:
+        raise ValueError("fft_mask must have same shape as fft output.")
+
+    # Compute frequency grid and prepare FFT data
+    frequency_grid = fftfreq_grid(
+        image_shape=image_shape,
+        rfft=rfft,
+        fftshift=False,
+        norm=True,
+        device=a_fft.device,
+    )
+
+    # Apply mask and flatten spatial dimensions
+    a_fft_flat, b_fft_flat, frequencies = _prepare_fft_data(
+        a_fft, b_fft, frequency_grid, fft_mask, len(image_shape)
+    )
+
+    # Compute frequency bins using weighted approach
+    bin_centers = _compute_frequency_bins_weighted(image_shape, a_fft.device)
+
+    # Compute broadcast batch dimensions for correlation computation
+    broadcast_shape = torch.broadcast_shapes(a_fft.shape, b_fft.shape)
+    batch_dims = broadcast_shape[: -len(image_shape)]
+
+    # Compute correlations using weighted interpolation
+    correlations = _compute_shell_correlations_weighted(
+        a_fft_flat,
+        b_fft_flat,
+        frequencies,
+        bin_centers,
+        batch_dims,
+    )
+
+    return torch.real(correlations)
 
 
 def fsc(
-    a: torch.Tensor,
-    b: torch.Tensor,
-    rfft_mask: torch.Tensor | None = None
+    a: torch.Tensor, b: torch.Tensor, fft_mask: torch.Tensor | None = None
 ) -> torch.Tensor:
-    """Fourier ring/shell correlation between two square/cubic images."""
-    # input handling
-    image_shape = a.shape
-    dft_shape = rfft_shape(image_shape)
-    if a.ndim not in (2, 3):
-        raise ValueError('images must be 2D or 3D.')
-    elif a.shape != b.shape:
-        raise ValueError('images must be the same shape.')
-    elif rfft_mask is not None and rfft_mask.shape != dft_shape:
-        raise ValueError('valid rfft indices must have same shape as rfft.')
+    """Fourier ring/shell correlation between two images.
 
-    # linearise data and fftfreq of each component
-    a, b = torch.fft.rfftn(a), torch.fft.rfftn(b)
-    frequency_grid = fftfreq_grid(
-        image_shape=image_shape,
-        rfft=True,
-        fftshift=False,
-        norm=True,
-        device=a.device,
-    )
-    if rfft_mask is not None:
-        a, b, frequencies = (arr[rfft_mask] for arr in [a, b, frequency_grid])
+    .. deprecated::
+        Use `fourier_ring_correlation` for 2D or `fourier_shell_correlation` for 3D.
+
+    Args:
+        a: Input tensor (2D or 3D)
+        b: Input tensor (2D or 3D), same shape as a
+        fft_mask: Optional mask for fft indices
+
+    Returns
+    -------
+        Correlation values of shape (n_shells,)
+    """
+    if a.ndim == 2:
+        return fourier_ring_correlation(a, b, fft_mask)
+    elif a.ndim == 3:
+        return fourier_shell_correlation(a, b, fft_mask)
     else:
-        a, b, frequencies = (torch.flatten(arg) for arg in [a, b, frequency_grid])
-
-    # define frequency bins
-    bin_centers = torch.fft.rfftfreq(image_shape[0], device=a.device)
-    df = 1 / image_shape[0]
-
-    # setup to split data at midpoint between frequency bin centers
-    bin_centers = torch.cat([bin_centers, torch.as_tensor([0.5 + df], device=a.device)])
-    bin_centers = bin_centers.unfold(dimension=0, size=2, step=1)  # (n_shells, 2)
-    split_points = einops.reduce(bin_centers, 'shells high_low -> shells', reduction='mean')
-    
-
-    # find indices of all components in each shell
-    sorted_frequencies, sort_idx = torch.sort(frequencies, descending=False)
-    split_idx = torch.searchsorted(sorted_frequencies, split_points)
-    shell_idx = torch.tensor_split(sort_idx, split_idx.cpu())[:-1]
-
-    # calculate normalised cross correlation in each shell
-    fsc = [
-        _normalised_cc_complex_1d(a[idx], b[idx])
-        for idx in
-        shell_idx[1:]
-    ]
-    fsc = [1.0] + fsc  # fix the 0 DC shell to 1.0
-    return torch.real(torch.tensor(fsc))
-
-
-def rfft_shape(image_shape: Sequence[int]) -> Tuple[int]:
-    """Calculate the shape of an rfft on an input image of a given shape."""
-    rfft_shape = list(image_shape)
-    rfft_shape[-1] = int((rfft_shape[-1] / 2) + 1)
-    return tuple(rfft_shape)
-
-
-def _normalised_cc_complex_1d(a: torch.Tensor, b: torch.Tensor):
-    correlation = torch.dot(a, torch.conj(b))
-    return correlation / (torch.linalg.norm(a) * torch.linalg.norm(b))
+        raise ValueError("images must be 2D or 3D.")
